@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "Paperjet — fast, private, browser-first PDF tools",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johnb8005/paperjet.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "bun --hot src/server.ts",

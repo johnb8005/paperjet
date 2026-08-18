@@ -1,4 +1,4 @@
-import { Send } from "lucide-react";
+import { Github, Send } from "lucide-react";
 import { Link, Router, useRouter } from "@/lib/router";
 import { TOOLS } from "@/lib/tools";
 import { HomePage } from "@/pages/Home";
@@ -10,6 +10,8 @@ import { ImageToPdfPage } from "@/pages/ImageToPdf";
 import { RotatePage } from "@/pages/Rotate";
 import { WordToPdfPage } from "@/pages/WordToPdf";
 import { SignPage } from "@/pages/Sign";
+
+const REPO_URL = "https://github.com/johnb8005/paperjet";
 
 const PAGES: Record<string, () => React.JSX.Element> = {
   "/": HomePage,
@@ -55,23 +57,35 @@ export function App() {
               </span>
               Paperjet
             </Link>
-            <nav aria-label="Tools" className="hidden items-center gap-1 md:flex">
-              {TOOLS.slice(0, 4).map((tool) => (
+            <div className="flex items-center gap-1">
+              <nav aria-label="Tools" className="hidden items-center gap-1 md:flex">
+                {TOOLS.slice(0, 4).map((tool) => (
+                  <Link
+                    key={tool.id}
+                    to={tool.path}
+                    className="rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    {tool.name}
+                  </Link>
+                ))}
                 <Link
-                  key={tool.id}
-                  to={tool.path}
+                  to="/"
                   className="rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 >
-                  {tool.name}
+                  All tools
                 </Link>
-              ))}
-              <Link
-                to="/"
-                className="rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              </nav>
+              <a
+                href={REPO_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Paperjet on GitHub"
+                title="View source on GitHub"
+                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                All tools
-              </Link>
-            </nav>
+                <Github className="size-5" aria-hidden />
+              </a>
+            </div>
           </div>
         </header>
 
@@ -87,7 +101,16 @@ export function App() {
               tools (Word to PDF) delete files within 1 hour, and no human ever sees them.
             </p>
             <p className="mt-2">
-              Paperjet · Free for everyone · No ads · {new Date().getFullYear()}
+              Paperjet · Free for everyone · No ads ·{" "}
+              <a
+                href={REPO_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 underline underline-offset-4 hover:text-foreground"
+              >
+                <Github className="size-3.5" aria-hidden /> Open source (MIT)
+              </a>{" "}
+              · {new Date().getFullYear()}
             </p>
           </div>
         </footer>

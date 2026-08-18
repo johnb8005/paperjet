@@ -70,3 +70,7 @@ Every result page offers **download → chain into another tool → start over**
 ## Product scope
 
 v1 implements the 8 core tools from the PRD (§4) with the free-tier limits (20 files / 100 MB per task), the UX requirements (§5: tool-grid homepage, drag-and-drop + paste everywhere, progress feedback, result-page chaining, no account wall), and the privacy stance (§6). Monetization (§7) and user management are out of scope for now — user auth will be integrated separately.
+
+## License
+
+[MIT](./LICENSE)
