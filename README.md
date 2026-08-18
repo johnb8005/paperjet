@@ -49,9 +49,38 @@ Word → PDF requires LibreOffice (`soffice`) on the server's PATH; without it t
 | Image → PDF | `/image-to-pdf` | Client-side — JPG/PNG/WebP, EXIF auto-orient, drag-to-reorder |
 | Rotate | `/rotate` | Client-side — per-page or all pages, live thumbnails |
 | Word → PDF | `/word-to-pdf` | **Server-side** — LibreOffice headless, files hard-deleted immediately |
+| Markdown → PDF | `/markdown-to-pdf` | Client-side — headings, lists, code, tables, blockquotes |
 | Sign | `/sign` | Client-side — draw/type/upload, stored in `localStorage` only |
 
 Every result page offers **download → chain into another tool → start over**.
+
+## MCP server
+
+The same PDF engines are exposed as an [MCP](https://modelcontextprotocol.io) server (stdio), so Claude Code, Claude Desktop, or any MCP client can merge/split/rotate/convert PDFs on local files:
+
+```sh
+bun run mcp            # or: bun src/mcp.ts
+```
+
+Register with Claude Code:
+
+```sh
+claude mcp add paperjet -- bun /path/to/paperjet/src/mcp.ts
+```
+
+Or in Claude Desktop's `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "paperjet": { "command": "bun", "args": ["/path/to/paperjet/src/mcp.ts"] }
+  }
+}
+```
+
+**Tools:** `merge_pdfs`, `split_pdf`, `rotate_pdf`, `images_to_pdf`, `markdown_to_pdf`, `docx_to_pdf` (needs LibreOffice). All tools take local file paths and process everything locally — nothing is uploaded.
+
+The package exposes a `paperjet-mcp` bin, so publishing to npm would make it runnable via `bunx paperjet-mcp` (Bun is required — the server uses Bun APIs). For wider distribution, add it to an MCP registry listing once published.
 
 ## Privacy model
 

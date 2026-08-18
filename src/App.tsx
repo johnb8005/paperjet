@@ -9,6 +9,7 @@ import { PdfToImagePage } from "@/pages/PdfToImage";
 import { ImageToPdfPage } from "@/pages/ImageToPdf";
 import { RotatePage } from "@/pages/Rotate";
 import { WordToPdfPage } from "@/pages/WordToPdf";
+import { MarkdownToPdfPage } from "@/pages/MarkdownToPdf";
 import { SignPage } from "@/pages/Sign";
 
 const REPO_URL = "https://github.com/johnb8005/paperjet";
@@ -22,6 +23,7 @@ const PAGES: Record<string, () => React.JSX.Element> = {
   "/image-to-pdf": ImageToPdfPage,
   "/rotate": RotatePage,
   "/word-to-pdf": WordToPdfPage,
+  "/markdown-to-pdf": MarkdownToPdfPage,
   "/sign": SignPage,
 };
 

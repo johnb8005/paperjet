@@ -1,5 +1,6 @@
 import {
   Combine,
+  FileCode,
   FileImage,
   FileText,
   ImagePlus,
@@ -104,6 +105,17 @@ export const TOOLS: ToolDef[] = [
     clientSide: false,
     acceptsPdf: false,
     accent: "bg-indigo-50 text-indigo-600",
+  },
+  {
+    id: "markdown-to-pdf",
+    path: "/markdown-to-pdf",
+    name: "Markdown to PDF",
+    tagline: "Turn Markdown notes into a clean PDF.",
+    icon: FileCode,
+    accept: "text/markdown,text/plain,.md,.markdown,.txt",
+    clientSide: true,
+    acceptsPdf: false,
+    accent: "bg-slate-100 text-slate-600",
   },
   {
     id: "sign",

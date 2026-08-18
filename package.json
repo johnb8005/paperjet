@@ -9,23 +9,30 @@
     "url": "https://github.com/johnb8005/paperjet.git"
   },
   "type": "module",
+  "bin": {
+    "paperjet-mcp": "./src/mcp.ts"
+  },
   "scripts": {
     "dev": "bun --hot src/server.ts",
+    "mcp": "bun src/mcp.ts",
     "start": "NODE_ENV=production bun src/server.ts",
     "build": "bun run build.ts",
     "typecheck": "tsgo --noEmit",
     "test": "bun test"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fflate": "^0.8.2",
     "lucide-react": "^0.540.0",
+    "marked": "^18.0.10",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "tailwind-merge": "^3.3.1"
+    "tailwind-merge": "^3.3.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "^1.2.19",
