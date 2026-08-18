@@ -82,6 +82,27 @@ Or in Claude Desktop's `claude_desktop_config.json`:
 
 The package exposes a `paperjet-mcp` bin, so publishing to npm would make it runnable via `bunx paperjet-mcp` (Bun is required — the server uses Bun APIs). For wider distribution, add it to an MCP registry listing once published.
 
+### Remote MCP server (hosted)
+
+`src/mcp-http.ts` is the hosted variant: **Streamable HTTP transport, stateless**, for use as a claude.ai custom connector or from any remote MCP client. Because a remote server can't see the caller's disk, tools take files as **URLs or base64** and return PDFs as base64 resources. Limits: 25 MB per file, 100 MB per request; URL fetches are SSRF-guarded (http/https only, private addresses blocked); uploads never touch disk except `docx_to_pdf`'s per-request temp dir, which is deleted in `finally`.
+
+```sh
+bun run mcp:remote                      # listens on :3000, endpoint /mcp
+MCP_AUTH_TOKEN=secret bun run mcp:remote  # optional bearer-token auth
+```
+
+**Deploying:** GitHub Pages and other static hosts can't run it — it needs compute. The included `Dockerfile` (Bun + LibreOffice Writer) works as-is on any container host:
+
+- **Railway / Render:** create a service from this GitHub repo — both auto-detect the Dockerfile. Set `MCP_AUTH_TOKEN` if you want auth. Done.
+- **Fly.io:** `fly launch` (uses the Dockerfile), `fly deploy`.
+- Any VPS: `docker build -t paperjet-mcp . && docker run -p 3000:3000 paperjet-mcp`.
+
+Then connect from claude.ai (Settings → Connectors → Add custom connector) or Claude Code:
+
+```sh
+claude mcp add --transport http paperjet-remote https://your-host/mcp
+```
+
 ## Privacy model
 
 - **Client-side tools** never upload anything: pdf-lib/pdf.js run in the browser (pdf.js in a web worker). This is stated on every tool page.

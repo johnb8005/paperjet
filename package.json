@@ -15,6 +15,7 @@
   "scripts": {
     "dev": "bun --hot src/server.ts",
     "mcp": "bun src/mcp.ts",
+    "mcp:remote": "bun src/mcp-http.ts",
     "start": "NODE_ENV=production bun src/server.ts",
     "build": "bun run build.ts",
     "typecheck": "tsgo --noEmit",
