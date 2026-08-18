@@ -91,11 +91,16 @@ bun run mcp:remote                      # listens on :3000, endpoint /mcp
 MCP_AUTH_TOKEN=secret bun run mcp:remote  # optional bearer-token auth
 ```
 
-**Deploying:** GitHub Pages and other static hosts can't run it — it needs compute. The included `Dockerfile` (Bun + LibreOffice Writer) works as-is on any container host:
+**Deploying:** GitHub Pages and other static hosts can't run it — it needs compute. Every push to `main` builds and publishes a ready-to-run image to **`ghcr.io/johnb8005/paperjet-mcp:latest`** (see `.github/workflows/docker.yml`), so hosts don't have to build anything:
 
-- **Railway / Render:** create a service from this GitHub repo — both auto-detect the Dockerfile. Set `MCP_AUTH_TOKEN` if you want auth. Done.
-- **Fly.io:** `fly launch` (uses the Dockerfile), `fly deploy`.
-- Any VPS: `docker build -t paperjet-mcp . && docker run -p 3000:3000 paperjet-mcp`.
+- **Render:** New → Web Service → "Existing image" → `ghcr.io/johnb8005/paperjet-mcp:latest` (or connect the repo and let it build the Dockerfile). Set `MCP_AUTH_TOKEN` if you want auth.
+- **Railway:** New service → "Docker Image" → same image.
+- **Fly.io:** `fly launch --image ghcr.io/johnb8005/paperjet-mcp:latest`.
+- Any VPS: `docker run -p 3000:3000 ghcr.io/johnb8005/paperjet-mcp:latest`.
+
+One-time step for registry deploys: make the GHCR package public (GitHub → your profile → Packages → paperjet-mcp → Package settings → Change visibility → Public), so hosts can pull it without credentials.
+
+Building locally instead: `docker build -t paperjet-mcp .` — add `--build-arg WITH_LIBREOFFICE=false` for a ~600 MB smaller, much faster build without the `docx_to_pdf` tool.
 
 Then connect from claude.ai (Settings → Connectors → Add custom connector) or Claude Code:
 
