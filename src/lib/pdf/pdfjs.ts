@@ -1,9 +1,10 @@
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
+import { withBase } from "../base";
 
 // The worker file is served by our server in dev and copied to dist/ by the
 // production build (see build.ts and src/server.ts).
-pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+pdfjs.GlobalWorkerOptions.workerSrc = withBase("/pdf.worker.min.mjs");
 
 export type { PDFDocumentProxy, PDFPageProxy };
 

@@ -30,6 +30,14 @@ bun run start      # production server (serves app + conversion API)
 
 Word → PDF requires LibreOffice (`soffice`) on the server's PATH; without it the endpoint degrades gracefully to a 503 and the UI explains the service is unavailable.
 
+## Deployment
+
+**GitHub Pages (backend-less):** every push to `main` triggers `.github/workflows/deploy-pages.yml`, which builds the static site with `BASE_PATH=/<repo>` and publishes `dist/` to Pages. All client-side tools work fully; the Word → PDF page detects the missing backend via `/api/health` and shows a service-unavailable notice. Deep links work through the `404.html` SPA fallback. One-time setup: repo **Settings → Pages → Source: GitHub Actions**.
+
+**Full deployment (with Word → PDF):** host `dist/` on any static host/CDN at the root path and run `bun run start` (needs LibreOffice) behind `/api/*`.
+
+`BASE_PATH` controls subpath hosting: it prefixes bundled asset URLs, router paths, and the pdf.js worker URL at build time (see `build.ts` and `src/lib/base.ts`).
+
 ## Tools
 
 | Tool | Route | Processing |

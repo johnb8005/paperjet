@@ -6,6 +6,7 @@ import {
   type AnchorHTMLAttributes,
   type ReactNode,
 } from "react";
+import { stripBase, withBase } from "./base";
 
 interface RouterState {
   path: string;
@@ -18,17 +19,17 @@ const RouterContext = createContext<RouterState>({
 });
 
 export function Router({ children }: { children: ReactNode }) {
-  const [path, setPath] = useState(() => window.location.pathname);
+  const [path, setPath] = useState(() => stripBase(window.location.pathname));
 
   useEffect(() => {
-    const onPopState = () => setPath(window.location.pathname);
+    const onPopState = () => setPath(stripBase(window.location.pathname));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   const navigate = (to: string) => {
-    if (to !== window.location.pathname) {
-      window.history.pushState({}, "", to);
+    if (withBase(to) !== window.location.pathname) {
+      window.history.pushState({}, "", withBase(to));
     }
     setPath(to);
     window.scrollTo(0, 0);
@@ -53,7 +54,7 @@ export function Link({ to, onClick, children, ...rest }: LinkProps) {
   const { navigate } = useRouter();
   return (
     <a
-      href={to}
+      href={withBase(to)}
       onClick={(e) => {
         onClick?.(e);
         if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey) return;

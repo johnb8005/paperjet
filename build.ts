@@ -1,7 +1,18 @@
-// Production build: bundles the SPA into dist/ for static hosting (CDN).
-// The Word→PDF API (src/server.ts) deploys separately; everything else is static.
+// Production build: bundles the SPA into dist/ for static hosting (CDN or
+// GitHub Pages). The Word→PDF API (src/server.ts) deploys separately and is
+// optional — without it, the Word to PDF page shows a service-unavailable
+// notice and every other tool still works.
+//
+// Set BASE_PATH (e.g. "/ilovepdf") to build for subpath hosting.
 import tailwind from "bun-plugin-tailwind";
 import { cp, rm } from "node:fs/promises";
+
+const rawBase = process.env.BASE_PATH ?? "";
+const base = rawBase === "/" ? "" : rawBase.replace(/\/+$/, "");
+if (base && !base.startsWith("/")) {
+  console.error(`BASE_PATH must start with "/", got "${rawBase}"`);
+  process.exit(1);
+}
 
 await rm("dist", { recursive: true, force: true });
 
@@ -11,6 +22,10 @@ const result = await Bun.build({
   minify: true,
   sourcemap: "linked",
   plugins: [tailwind],
+  publicPath: base ? `${base}/` : undefined,
+  define: {
+    __BASE_PATH__: JSON.stringify(base),
+  },
 });
 
 if (!result.success) {
@@ -22,4 +37,7 @@ if (!result.success) {
 const workerPath = Bun.resolveSync("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.dir);
 await cp(workerPath, "dist/pdf.worker.min.mjs");
 
-console.log(`Built ${result.outputs.length} files to dist/`);
+// SPA deep-link fallback for static hosts that serve 404.html (GitHub Pages).
+await cp("dist/index.html", "dist/404.html");
+
+console.log(`Built ${result.outputs.length} files to dist/${base ? ` (base path ${base})` : ""}`);
