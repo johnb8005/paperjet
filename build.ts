@@ -3,7 +3,7 @@
 // optional — without it, the Word to PDF page shows a service-unavailable
 // notice and every other tool still works.
 //
-// Set BASE_PATH (e.g. "/ilovepdf") to build for subpath hosting.
+// Set BASE_PATH (e.g. "/paperjet") to build for subpath hosting.
 import tailwind from "bun-plugin-tailwind";
 import { cp, rm } from "node:fs/promises";
 
