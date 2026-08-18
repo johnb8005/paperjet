@@ -1,4 +1,4 @@
-# Paperjet ✈️
+# Paperjet
 
 Fast, private, browser-first PDF tools. Merge, split, compress, convert, rotate, and sign PDFs — no account, no ads, and for 7 of 8 tools **your files never leave your device**.
 
