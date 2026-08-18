@@ -20,6 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Enables GitHub Pages (Source: GitHub Actions) on first run.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
