@@ -6,14 +6,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { PDFDocument } from "pdf-lib";
 import { mergePdfs } from "./lib/pdf/merge";
 import { burstPages, extractRanges, parseRanges } from "./lib/pdf/split";
 import { rotatePdf } from "./lib/pdf/rotate";
 import { markdownToPdf } from "./lib/pdf/markdown";
+import { docxToPdf } from "./lib/pdf/docx";
 import { embedImagesToPdf, kindFromName, type ImageInput } from "./lib/pdf/imagesCore";
 
 const server = new McpServer({ name: "paperjet", version: "0.1.0" });
@@ -174,36 +174,17 @@ server.registerTool(
   {
     title: "Word to PDF",
     description:
-      "Convert a .docx document to PDF using headless LibreOffice (must be installed locally as `soffice`).",
+      "Convert a .docx document to PDF with Paperjet's built-in renderer (text formatting, styles, lists, tables, images, links, page setup). No external software needed.",
     inputSchema: {
       input_path: z.string().describe("Path of the .docx file"),
       output_path: z.string().describe("Path to write the PDF to"),
     },
   },
   async ({ input_path, output_path }) => {
-    const binary = Bun.which("soffice") ?? Bun.which("libreoffice");
-    if (!binary) throw new Error("LibreOffice (`soffice`) is not installed or not on PATH.");
-    const abs = resolve(input_path);
-    if (!(await Bun.file(abs).exists())) throw new Error(`File not found: ${input_path}`);
-    const dir = await mkdtemp(join(tmpdir(), "paperjet-mcp-"));
-    try {
-      const proc = Bun.spawn(
-        [binary, "--headless", "--norestore", "--convert-to", "pdf", "--outdir", dir, abs],
-        { stdout: "ignore", stderr: "pipe", env: { ...process.env, HOME: dir } },
-      );
-      const timeout = setTimeout(() => proc.kill(), 120_000);
-      const exitCode = await proc.exited;
-      clearTimeout(timeout);
-      const produced = (await readdir(dir)).find((n) => n.endsWith(".pdf"));
-      if (exitCode !== 0 || !produced) {
-        throw new Error("LibreOffice could not convert this document.");
-      }
-      const bytes = new Uint8Array(await Bun.file(join(dir, produced)).arrayBuffer());
-      const out = await writeBytes(output_path, bytes);
-      return ok(`Converted ${input_path} → ${out}`);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    const bytes = await docxToPdf(await readPdf(input_path));
+    const out = await writeBytes(output_path, bytes);
+    const pages = (await PDFDocument.load(bytes)).getPageCount();
+    return ok(`Converted ${input_path} → ${out} (${pages} page${pages === 1 ? "" : "s"})`);
   },
 );
 

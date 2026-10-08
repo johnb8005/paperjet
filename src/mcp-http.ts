@@ -11,9 +11,6 @@
 //   MCP_AUTH_TOKEN  — if set, requests must send "Authorization: Bearer <token>"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { lookup } from "node:dns/promises";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -22,6 +19,7 @@ import { mergePdfs } from "./lib/pdf/merge";
 import { burstPages, extractRanges, parseRanges } from "./lib/pdf/split";
 import { rotatePdf } from "./lib/pdf/rotate";
 import { markdownToPdf } from "./lib/pdf/markdown";
+import { docxToPdf } from "./lib/pdf/docx";
 import { embedImagesToPdf, type ImageInput } from "./lib/pdf/imagesCore";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -255,41 +253,21 @@ function buildServer(): McpServer {
     },
   );
 
-  if (Bun.which("soffice") ?? Bun.which("libreoffice")) {
-    server.registerTool(
-      "docx_to_pdf",
-      {
-        title: "Word to PDF",
-        description: "Convert a .docx document (URL or base64) to PDF via headless LibreOffice.",
-        inputSchema: { file: fileSpec },
-      },
-      async ({ file }) => {
-        const bytes = await loadFile(file);
-        const binary = (Bun.which("soffice") ?? Bun.which("libreoffice"))!;
-        const dir = await mkdtemp(join(tmpdir(), "paperjet-remote-"));
-        try {
-          const inputPath = join(dir, "input.docx");
-          await Bun.write(inputPath, bytes.slice());
-          const proc = Bun.spawn(
-            [binary, "--headless", "--norestore", "--convert-to", "pdf", "--outdir", dir, inputPath],
-            { stdout: "ignore", stderr: "ignore", env: { ...process.env, HOME: dir } },
-          );
-          const timeout = setTimeout(() => proc.kill(), 120_000);
-          const exitCode = await proc.exited;
-          clearTimeout(timeout);
-          const produced = (await readdir(dir)).find((n) => n.endsWith(".pdf"));
-          if (exitCode !== 0 || !produced) {
-            throw new Error("LibreOffice could not convert this document.");
-          }
-          const out = new Uint8Array(await Bun.file(join(dir, produced)).arrayBuffer());
-          return pdfResult("converted.pdf", out, "Converted the document to PDF.");
-        } finally {
-          // Privacy contract: uploads never outlive the request.
-          await rm(dir, { recursive: true, force: true });
-        }
-      },
-    );
-  }
+  server.registerTool(
+    "docx_to_pdf",
+    {
+      title: "Word to PDF",
+      description:
+        "Convert a .docx document (URL or base64) to PDF with Paperjet's built-in renderer (text formatting, styles, lists, tables, images, links, page setup).",
+      inputSchema: { file: fileSpec },
+    },
+    async ({ file }) => {
+      const bytes = await loadFile(file);
+      const out = await docxToPdf(bytes);
+      const pages = (await PDFDocument.load(out)).getPageCount();
+      return pdfResult("converted.pdf", out, `Converted the document to a ${pages}-page PDF.`);
+    },
+  );
 
   return server;
 }
@@ -337,7 +315,6 @@ const httpServer = createServer(async (req, res) => {
       name: "paperjet-mcp",
       transport: "streamable-http",
       endpoint: "/mcp",
-      docx: Boolean(Bun.which("soffice") ?? Bun.which("libreoffice")),
     });
     return;
   }

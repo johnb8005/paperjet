@@ -102,7 +102,7 @@ export const TOOLS: ToolDef[] = [
     icon: FileText,
     accept:
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx",
-    clientSide: false,
+    clientSide: true,
     acceptsPdf: false,
     accent: "bg-indigo-50 text-indigo-600",
   },
