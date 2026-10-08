@@ -121,14 +121,17 @@ claude mcp add --transport http paperjet-remote https://your-host/mcp
 
 `src/lib/pdf/docx.ts` is a from-scratch `.docx` layout engine rather than a LibreOffice/WASM port (LibreOffice-in-WASM builds are hundreds of MB and need cross-origin isolation headers that static hosts like GitHub Pages can't set). It converts a typical document in well under a second and handles:
 
-- paragraphs: alignment, indents, hanging indents, spacing, line spacing, borders, shading, tabs, page/line/section breaks, page size and margins
+- paragraphs: alignment, indents, hanging indents, spacing, line spacing, borders, shading, left/center/right tab stops, page/line/section breaks, page size and margins
 - runs: bold, italic, underline, strikethrough, size, color, highlight, super/subscript, caps, hyperlinks
-- styles: paragraph and character styles with `basedOn` chains and document defaults
+- styles: paragraph and character styles with `basedOn` chains, document defaults and theme fonts
 - lists: bullets and multi-level numbering from `numbering.xml` (decimal, letters, roman)
 - tables: grid widths, column spans, vertical merges, borders, cell shading, nested tables
 - images: inline PNG and JPEG (other formats show an `[image]` placeholder)
+- headers and footers (default/first/even variants) with live `PAGE` / `NUMPAGES` fields
 
-Not rendered yet: headers/footers, footnotes, text boxes and shapes (their text is salvaged inline), floating-image wrapping. Text uses the PDF standard fonts (Helvetica/Times/Courier families chosen by the document's font names), which cover Latin-1 only — other accented Latin letters fall back to their base letter and non-Latin scripts are dropped. Embedding a Unicode font is the planned upgrade path.
+**Fonts.** Text is set in open fonts that are metric-compatible with the usual Word fonts — Liberation (Arial/Times New Roman/Courier New), Carlito (Calibri) and Caladea (Cambria) — with DejaVu Sans as a per-character fallback, so Latin, Greek and Cyrillic text renders as written. Faces live in `fonts/` (see its README for provenance, licenses and the preparation script), are lazy-loaded only when a document uses them, and are embedded as subsets so output PDFs stay small. If the font files can't be fetched, the renderer falls back to the PDF standard fonts.
+
+Not rendered yet: footnotes, text boxes and shapes (their text is salvaged inline), floating-image wrapping, and CJK or complex scripts (no bundled font covers them; those characters are dropped).
 
 ## Product scope
 
@@ -136,4 +139,4 @@ v1 implements the 8 core tools from the PRD (§4) with the free-tier limits (20 
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). The bundled fonts in `fonts/` keep their own licenses (SIL OFL 1.1 for Liberation, Carlito and Caladea; the Bitstream Vera license for DejaVu) — see `fonts/README.md`.

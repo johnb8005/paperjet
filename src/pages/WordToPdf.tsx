@@ -100,9 +100,10 @@ export function WordToPdfPage() {
             </span>
           </Alert>
           <p className="text-xs text-muted-foreground">
-            Supports text formatting, styles, lists, tables, images, links and page setup.
-            Headers/footers, footnotes, text boxes and non-Latin scripts aren’t rendered yet,
-            and fonts are substituted with the PDF standard fonts.
+            Supports text formatting, styles, lists, tables, images, links, headers/footers
+            with page numbers, and page setup. Fonts are substituted with metric-compatible
+            open fonts (Latin, Greek and Cyrillic). Footnotes, text boxes and CJK scripts
+            aren’t rendered yet.
           </p>
         </div>
       )}

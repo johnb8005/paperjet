@@ -1,20 +1,28 @@
 // Word (.docx) → PDF, DOM-free: runs in the browser AND in Bun (MCP server).
 // The document is unzipped with fflate, its WordprocessingML parsed with
-// fast-xml-parser, and laid out with pdf-lib's standard fonts — no server, no
-// LibreOffice, no network. Files never leave the device.
+// fast-xml-parser, and laid out with pdf-lib — no server, no LibreOffice.
+// Files never leave the device.
 //
-// Supported: paragraphs with alignment/indent/spacing, run formatting (bold,
-// italic, underline, strike, size, color, highlight, super/subscript, caps),
-// paragraph and character styles (with basedOn chains and docDefaults),
-// numbered and bulleted lists (numbering.xml, multi-level), tables (grid
-// widths, spans, borders, shading, nested tables), inline PNG/JPEG images,
-// hyperlinks, tabs, line/page/section breaks, page size and margins.
-// Simplified or skipped: headers/footers, footnotes, text boxes/shapes,
-// floating images (rendered inline), non-Latin scripts (standard PDF fonts
-// cover Latin-1 only; accented letters outside it fall back to their base).
+// Supported: paragraphs with alignment/indent/spacing/tabs, run formatting
+// (bold, italic, underline, strike, size, color, highlight, super/subscript,
+// caps), paragraph and character styles (basedOn chains, docDefaults, theme
+// fonts), numbered and bulleted lists (numbering.xml, multi-level), tables
+// (grid widths, spans, merges, borders, shading, nesting), inline PNG/JPEG
+// images, hyperlinks, headers/footers with PAGE/NUMPAGES fields, line/page/
+// section breaks, page size and margins.
+//
+// Text is set in metric-compatible TrueType fonts (Liberation, Carlito,
+// Caladea) lazy-loaded from fonts/, with DejaVu Sans as a per-character
+// fallback, so Latin, Greek and Cyrillic render properly; when the font
+// files are unavailable the PDF standard fonts are used instead. Still
+// skipped: footnotes, floating-image wrap, CJK and complex scripts.
 import { unzipSync, strFromU8 } from "fflate";
 import { XMLParser } from "fast-xml-parser";
 import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb, type RGB } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import { loadFontFile } from "./fonts";
+
+type FontkitFont = ReturnType<typeof fontkit.create>;
 
 // ---------------------------------------------------------------------------
 // XML
@@ -146,7 +154,35 @@ const HIGHLIGHTS: Record<string, string> = {
 // Formatting model
 // ---------------------------------------------------------------------------
 
-type Family = "sans" | "serif" | "mono";
+type Family = "sans" | "serif" | "mono" | "calibri" | "cambria";
+
+interface FamilyDef {
+  /** Base name of the TrueType files in fonts/ (Regular/Bold/Italic/BoldItalic). */
+  file: string;
+  /** Standard-14 fallbacks when the font files can't be loaded. */
+  std: [StandardFonts, StandardFonts, StandardFonts, StandardFonts];
+}
+
+const SANS_STD: FamilyDef["std"] = [StandardFonts.Helvetica, StandardFonts.HelveticaBold, StandardFonts.HelveticaOblique, StandardFonts.HelveticaBoldOblique];
+const SERIF_STD: FamilyDef["std"] = [StandardFonts.TimesRoman, StandardFonts.TimesRomanBold, StandardFonts.TimesRomanItalic, StandardFonts.TimesRomanBoldItalic];
+const MONO_STD: FamilyDef["std"] = [StandardFonts.Courier, StandardFonts.CourierBold, StandardFonts.CourierOblique, StandardFonts.CourierBoldOblique];
+
+/** Metric-compatible open fonts: Liberation = Arial/Times/Courier New, Carlito = Calibri, Caladea = Cambria. */
+const FAMILIES: Record<Family, FamilyDef> = {
+  sans: { file: "LiberationSans", std: SANS_STD },
+  calibri: { file: "Carlito", std: SANS_STD },
+  serif: { file: "LiberationSerif", std: SERIF_STD },
+  cambria: { file: "Caladea", std: SERIF_STD },
+  mono: { file: "LiberationMono", std: MONO_STD },
+};
+
+/** Wide-coverage fallback for characters the primary font lacks (Regular + Bold only). */
+const FALLBACK_FAMILY = "DejaVuSans";
+
+interface ThemeFonts {
+  major: string | undefined;
+  minor: string | undefined;
+}
 
 interface RunStyle {
   bold: boolean;
@@ -185,7 +221,12 @@ interface ParaProps {
   borderBottom: { width: number; color: RGB } | undefined;
   borderTop: { width: number; color: RGB } | undefined;
   shading: RGB | undefined;
-  tabs: number[]; // absolute tab stops in points from the left margin
+  tabs: TabStop[]; // absolute tab stops in points from the left margin
+}
+
+interface TabStop {
+  pos: number;
+  align: "left" | "center" | "right";
 }
 
 function defaultRun(): RunStyle {
@@ -232,14 +273,16 @@ function defaultPara(): ParaProps {
 
 function familyFor(name: string | undefined, fallback: Family): Family {
   if (!name) return fallback;
+  if (/calibri|carlito/i.test(name)) return "calibri";
+  if (/cambria|caladea/i.test(name)) return "cambria";
   if (/courier|consolas|mono|menlo|monaco|lucida console|fixed/i.test(name)) return "mono";
-  if (/times|georgia|garamond|cambria|palatino|book antiqua|baskerville|century|bookman|minion|serif/i.test(name) && !/sans/i.test(name)) {
+  if (/times|georgia|garamond|palatino|book antiqua|baskerville|century|bookman|minion|constantia|serif/i.test(name) && !/sans/i.test(name)) {
     return "serif";
   }
-  return fallback === "mono" ? "sans" : "sans";
+  return "sans";
 }
 
-function applyRPr(s: RunStyle, rPr: XNode | undefined): void {
+function applyRPr(s: RunStyle, rPr: XNode | undefined, theme: ThemeFonts): void {
   if (!rPr) return;
   const b = flag(rPr, "w:b");
   if (b !== undefined) s.bold = b;
@@ -259,9 +302,11 @@ function applyRPr(s: RunStyle, rPr: XNode | undefined): void {
   if (shd && !s.highlight) s.highlight = hexColor(shd.attrs["w:fill"]);
   const fonts = child(rPr, "w:rFonts");
   if (fonts) {
-    const name = fonts.attrs["w:ascii"] ?? fonts.attrs["w:hAnsi"] ?? fonts.attrs["w:cs"];
+    const themeRef = fonts.attrs["w:asciiTheme"] ?? fonts.attrs["w:hAnsiTheme"];
+    const name = themeRef
+      ? (themeRef.startsWith("major") ? theme.major : theme.minor)
+      : (fonts.attrs["w:ascii"] ?? fonts.attrs["w:hAnsi"] ?? fonts.attrs["w:cs"]);
     if (name) s.family = familyFor(name, s.family);
-    else if (fonts.attrs["w:asciiTheme"]) s.family = "sans";
   }
   const vert = val(rPr, "w:vertAlign");
   if (vert) s.script = vert === "superscript" ? "super" : vert === "subscript" ? "sub" : "normal";
@@ -349,10 +394,13 @@ function applyPPr(p: ParaProps, pPr: XNode | undefined): void {
     for (const t of children(tabs, "w:tab")) {
       const pos = num(t.attrs["w:pos"]);
       if (pos === undefined) continue;
-      if (t.attrs["w:val"] === "clear") p.tabs = p.tabs.filter((x) => Math.abs(x - pos * TWIP) > 0.5);
-      else p.tabs.push(pos * TWIP);
+      const kind = t.attrs["w:val"] ?? "left";
+      p.tabs = p.tabs.filter((x) => Math.abs(x.pos - pos * TWIP) > 0.5);
+      if (kind !== "clear") {
+        p.tabs.push({ pos: pos * TWIP, align: kind === "center" ? "center" : kind === "right" || kind === "decimal" ? "right" : "left" });
+      }
     }
-    p.tabs.sort((a, b) => a - b);
+    p.tabs.sort((a, b) => a.pos - b.pos);
   }
 }
 
@@ -374,8 +422,10 @@ class Styles {
   private defaults = new Map<string, string>(); // type \u2192 styleId
   docPPr: XNode | undefined;
   docRPr: XNode | undefined;
+  readonly theme: ThemeFonts;
 
-  constructor(root: XNode | undefined) {
+  constructor(root: XNode | undefined, theme: ThemeFonts) {
+    this.theme = theme;
     if (!root) return;
     const dd = child(root, "w:docDefaults");
     this.docPPr = child(child(dd, "w:pPrDefault"), "w:pPr");
@@ -431,17 +481,17 @@ class Styles {
   /** Base run style for a paragraph style (docDefaults + style chain rPr). */
   runStyle(paraStyleId: string | undefined): RunStyle {
     const s = defaultRun();
-    applyRPr(s, this.docRPr);
+    applyRPr(s, this.docRPr, this.theme);
     const chain = this.chain(paraStyleId ?? this.defaultFor("paragraph"));
     if (paraStyleId && !chain.some((x) => x.id === this.defaultFor("paragraph"))) {
-      for (const x of this.chain(this.defaultFor("paragraph"))) applyRPr(s, x.rPr);
+      for (const x of this.chain(this.defaultFor("paragraph"))) applyRPr(s, x.rPr, this.theme);
     }
-    for (const x of chain) applyRPr(s, x.rPr);
+    for (const x of chain) applyRPr(s, x.rPr, this.theme);
     return s;
   }
 
   applyCharStyle(s: RunStyle, styleId: string | undefined): void {
-    for (const x of this.chain(styleId)) applyRPr(s, x.rPr);
+    for (const x of this.chain(styleId)) applyRPr(s, x.rPr, this.theme);
   }
 
   tableBorders(styleId: string | undefined): XNode | undefined {
@@ -615,6 +665,7 @@ type Inline =
   | { kind: "text"; text: string; style: RunStyle }
   | { kind: "image"; image: ImageRef; width: number; height: number }
   | { kind: "placeholder"; style: RunStyle }
+  | { kind: "field"; name: "PAGE" | "NUMPAGES"; style: RunStyle }
   | { kind: "tab" }
   | { kind: "break" }
   | { kind: "pageBreak" };
@@ -657,11 +708,39 @@ interface Section {
   right: number;
   bottom: number;
   left: number;
+  /** Distance from the page edge to the header/footer. */
+  headerDist: number;
+  footerDist: number;
+}
+
+/** Header or footer variants of a section. */
+interface PageDecor {
+  default: Block[] | undefined;
+  first: Block[] | undefined;
+  even: Block[] | undefined;
 }
 
 interface Parsed {
   blocks: Block[];
   section: Section;
+  headers: PageDecor;
+  footers: PageDecor;
+  titlePage: boolean;
+  evenOdd: boolean;
+}
+
+interface FieldState {
+  mode: "instr" | "result";
+  instr: string;
+  /** Instruction recognised (PAGE/NUMPAGES): its cached result text is replaced by a live field. */
+  known: boolean;
+  emitted: boolean;
+}
+
+function knownField(instr: string): "PAGE" | "NUMPAGES" | undefined {
+  const m = /^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b/i.exec(instr);
+  if (!m) return undefined;
+  return m[1]!.toUpperCase() === "PAGE" ? "PAGE" : "NUMPAGES";
 }
 
 class DocxReader {
@@ -672,12 +751,23 @@ class DocxReader {
 
   constructor(files: Record<string, Uint8Array>) {
     this.files = files;
-    this.styles = new Styles(this.xml("word/styles.xml"));
-    this.numbering = new Numbering(this.xml("word/numbering.xml"));
     const rels = this.xml("word/_rels/document.xml.rels");
     for (const r of children(rels, "Relationship")) {
       if (r.attrs.Id && r.attrs.Target) this.rels.set(r.attrs.Id, r.attrs.Target);
     }
+    const themeRel = children(rels, "Relationship").find((r) => r.attrs.Type?.endsWith("/theme"));
+    const theme = this.xml(this.partPath(themeRel?.attrs.Target ?? "theme/theme1.xml"));
+    const fontScheme = theme ? [...descendants(theme)].find((d) => d.name === "a:fontScheme") : undefined;
+    this.styles = new Styles(this.xml("word/styles.xml"), {
+      major: attr(child(child(fontScheme, "a:majorFont"), "a:latin"), "typeface"),
+      minor: attr(child(child(fontScheme, "a:minorFont"), "a:latin"), "typeface"),
+    });
+    this.numbering = new Numbering(this.xml("word/numbering.xml"));
+  }
+
+  /** Resolve a relationship target (relative to word/) to a zip entry path. */
+  private partPath(target: string): string {
+    return target.startsWith("/") ? target.slice(1) : `word/${target.replace(/^(\.\.\/)+/, "")}`;
   }
 
   private xml(path: string): XNode | undefined {
@@ -695,7 +785,33 @@ class DocxReader {
     const body = child(document, "w:body");
     if (!document || !body) throw new Error("This file doesn't look like a Word document.");
     const blocks = this.blocks(body);
-    return { blocks, section: this.section(child(body, "w:sectPr")) };
+    const sectPr = child(body, "w:sectPr");
+    const settings = this.xml("word/settings.xml");
+    return {
+      blocks,
+      section: this.section(sectPr),
+      headers: this.decor(sectPr, "w:headerReference"),
+      footers: this.decor(sectPr, "w:footerReference"),
+      titlePage: flag(sectPr, "w:titlePg") ?? false,
+      evenOdd: flag(settings, "w:evenAndOddHeaders") ?? false,
+    };
+  }
+
+  /** Header/footer parts referenced from the section properties. */
+  private decor(sectPr: XNode | undefined, refName: string): PageDecor {
+    const out: PageDecor = { default: undefined, first: undefined, even: undefined };
+    for (const ref of children(sectPr, refName)) {
+      const target = this.rels.get(ref.attrs["r:id"] ?? "");
+      if (!target) continue;
+      const root = this.xml(this.partPath(target));
+      if (!root) continue;
+      const type = ref.attrs["w:type"] === "first" ? "first" : ref.attrs["w:type"] === "even" ? "even" : "default";
+      const blocks = this.blocks(root);
+      // Ignore empty headers/footers (a single empty paragraph).
+      const hasContent = blocks.some((b) => b.kind !== "para" || b.inlines.length > 0);
+      if (hasContent) out[type] = blocks;
+    }
+    return out;
   }
 
   private section(sectPr: XNode | undefined): Section {
@@ -715,6 +831,8 @@ class DocxReader {
       right: margin("w:right", 72),
       bottom: margin("w:bottom", 72),
       left: margin("w:left", 72),
+      headerDist: margin("w:header", 36),
+      footerDist: margin("w:footer", 36),
     };
   }
 
@@ -760,12 +878,12 @@ class DocxReader {
 
     const base = this.styles.runStyle(styleId);
     const mark = { ...base };
-    applyRPr(mark, child(pPr, "w:rPr"));
+    applyRPr(mark, child(pPr, "w:rPr"), this.styles.theme);
 
     let label: string | undefined;
     if (props.numId && level) {
       label = this.numbering.label(props.numId, props.ilvl);
-      applyRPr(mark, level.rPr);
+      applyRPr(mark, level.rPr, this.styles.theme);
     }
 
     const inlines: Inline[] = [];
@@ -773,7 +891,7 @@ class DocxReader {
     return { kind: "para", props, mark, label, inlines };
   }
 
-  private collect(node: XNode, base: RunStyle, out: Inline[], state: { field: ("instr" | "result")[] }): void {
+  private collect(node: XNode, base: RunStyle, out: Inline[], state: { field: FieldState[] }): void {
     for (const c of node.children) {
       switch (c.name) {
         case "w:r":
@@ -784,10 +902,22 @@ class DocxReader {
           this.collect(c, linked, out, state);
           break;
         }
+        case "w:fldSimple": {
+          const name = knownField(c.attrs["w:instr"] ?? "");
+          if (name) {
+            const style = { ...base };
+            const rPr = child(child(c, "w:r"), "w:rPr");
+            this.styles.applyCharStyle(style, val(rPr, "w:rStyle"));
+            applyRPr(style, rPr, this.styles.theme);
+            out.push({ kind: "field", name, style });
+          } else {
+            this.collect(c, base, out, state);
+          }
+          break;
+        }
         case "w:ins":
         case "w:smartTag":
         case "w:customXml":
-        case "w:fldSimple":
         case "w:dir":
         case "w:bdo":
           this.collect(c, base, out, state);
@@ -801,25 +931,43 @@ class DocxReader {
     }
   }
 
-  private run(r: XNode, base: RunStyle, out: Inline[], state: { field: ("instr" | "result")[] }): void {
+  private run(r: XNode, base: RunStyle, out: Inline[], state: { field: FieldState[] }): void {
     const style = { ...base };
     const rPr = child(r, "w:rPr");
     this.styles.applyCharStyle(style, val(rPr, "w:rStyle"));
-    applyRPr(style, rPr);
+    applyRPr(style, rPr, this.styles.theme);
     if (style.hidden) return;
+    const top = () => state.field[state.field.length - 1];
     for (const c of r.children) {
       switch (c.name) {
         case "w:fldChar": {
           const type = c.attrs["w:fldCharType"];
-          if (type === "begin") state.field.push("instr");
-          else if (type === "separate" && state.field.length) state.field[state.field.length - 1] = "result";
-          else if (type === "end") state.field.pop();
+          if (type === "begin") {
+            state.field.push({ mode: "instr", instr: "", known: false, emitted: false });
+          } else if (type === "separate" && top()) {
+            const f = top()!;
+            f.mode = "result";
+            const name = knownField(f.instr);
+            if (name) {
+              f.known = true;
+              f.emitted = true;
+              out.push({ kind: "field", name, style });
+            }
+          } else if (type === "end") {
+            const f = state.field.pop();
+            const name = f && !f.emitted ? knownField(f.instr) : undefined;
+            if (name) out.push({ kind: "field", name, style });
+          }
           break;
         }
-        case "w:t":
-        case "w:delText": {
-          if (c.name === "w:delText") break;
-          if (state.field[state.field.length - 1] === "instr") break;
+        case "w:instrText": {
+          const f = top();
+          if (f && f.mode === "instr") f.instr += c.children.map((t) => t.text).join("");
+          break;
+        }
+        case "w:t": {
+          const f = top();
+          if (f && (f.mode === "instr" || f.known)) break;
           const text = c.children.map((t) => t.text).join("");
           if (text) out.push({ kind: "text", text, style });
           break;
@@ -874,8 +1022,7 @@ class DocxReader {
     if (!relId) return undefined;
     const target = this.rels.get(relId);
     if (!target) return undefined;
-    const path = target.startsWith("/") ? target.slice(1) : `word/${target.replace(/^(\.\.\/)+/, "")}`;
-    const data = this.files[path];
+    const data = this.files[this.partPath(target)];
     if (!data || data.length < 4) return undefined;
     if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return { data, kind: "png" };
     if (data[0] === 0xff && data[1] === 0xd8) return { data, kind: "jpg" };
@@ -1020,6 +1167,14 @@ interface Gap {
   kind: "space" | "tab";
   width: number;
   style: RunStyle | undefined;
+  /** For tabs: the stop this tab jumps to (undefined = default left stop). */
+  stop?: TabStop;
+}
+
+interface LoadedFont {
+  pdf: PDFFont;
+  /** fontkit handle for glyph-coverage checks; undefined for standard fonts. */
+  fk: FontkitFont | undefined;
 }
 
 type LineItem = Piece | ImagePiece | Gap;
@@ -1045,18 +1200,64 @@ class Renderer {
   private page!: PDFPage;
   private y = 0;
   private section!: Section;
-  private fonts = new Map<string, PDFFont>();
-  private encodable = new Map<PDFFont, Map<string, boolean>>();
+  /** Body area limits, after reserving room for headers/footers. */
+  private bodyTop = 0;
+  private bodyBottom = 0;
+  private fonts = new Map<string, Promise<LoadedFont>>();
+  private loaded = new Map<string, LoadedFont>();
+  private encodable = new Map<LoadedFont, Map<string, boolean>>();
   private glyphWidths = new Map<PDFFont, Map<string, number>>();
   private images = new Map<Uint8Array, Promise<PDFImage | undefined>>();
   private prevPara: Para | undefined;
+  /** Current values for PAGE / NUMPAGES fields. */
+  private pageNumber = 1;
+  private pageCount = 1;
 
   async render(parsed: Parsed): Promise<Uint8Array> {
     this.doc = await PDFDocument.create();
+    this.doc.registerFontkit(fontkit);
     this.section = parsed.section;
-    await this.preloadFonts(parsed.blocks);
+    const decor = [parsed.headers, parsed.footers].flatMap((d) => [d.default, d.first, d.even]).filter((b): b is Block[] => !!b);
+    await this.preloadFonts([parsed.blocks, ...decor].flat());
+
+    // Reserve body space for the tallest header/footer variant.
+    const maxDecor = this.section.height / 3;
+    let headerH = 0;
+    let footerH = 0;
+    for (const blocks of [parsed.headers.default, parsed.headers.first, parsed.headers.even]) {
+      if (blocks) headerH = Math.max(headerH, Math.min(maxDecor, (await this.measureBlocks(blocks, this.contentWidth, maxDecor)).height));
+    }
+    for (const blocks of [parsed.footers.default, parsed.footers.first, parsed.footers.even]) {
+      if (blocks) footerH = Math.max(footerH, Math.min(maxDecor, (await this.measureBlocks(blocks, this.contentWidth, maxDecor)).height));
+    }
+    this.bodyTop = Math.max(this.section.top, headerH ? this.section.headerDist + headerH + 4 : 0);
+    this.bodyBottom = Math.max(this.section.bottom, footerH ? this.section.footerDist + footerH + 4 : 0);
+
     this.newPage();
     await this.flow(parsed.blocks);
+
+    // Headers and footers go on last, once the page count is known.
+    const pages = this.doc.getPages();
+    this.pageCount = pages.length;
+    const pick = (d: PageDecor, pageNo: number): Block[] | undefined => {
+      if (pageNo === 1 && parsed.titlePage && d.first) return d.first;
+      if (parsed.evenOdd && pageNo % 2 === 0 && d.even) return d.even;
+      return d.default;
+    };
+    for (let i = 0; i < pages.length; i++) {
+      this.page = pages[i]!;
+      this.pageNumber = i + 1;
+      const header = pick(parsed.headers, i + 1);
+      if (header) {
+        const m = await this.measureBlocks(header, this.contentWidth, maxDecor);
+        m.draw(this.section.left, this.section.height - this.section.headerDist);
+      }
+      const footer = pick(parsed.footers, i + 1);
+      if (footer) {
+        const m = await this.measureBlocks(footer, this.contentWidth, maxDecor);
+        m.draw(this.section.left, this.section.footerDist + m.height);
+      }
+    }
     return this.doc.save();
   }
 
@@ -1068,7 +1269,7 @@ class Renderer {
       for (const b of bs) {
         if (b.kind === "para") {
           keys.add(this.fontKey(b.mark));
-          for (const i of b.inlines) if (i.kind === "text" || i.kind === "placeholder") keys.add(this.fontKey(i.style));
+          for (const i of b.inlines) if (i.kind === "text" || i.kind === "placeholder" || i.kind === "field") keys.add(this.fontKey(i.style));
         } else if (b.kind === "table") {
           for (const r of b.rows) for (const c of r.cells) visit(c.blocks);
         }
@@ -1076,46 +1277,60 @@ class Renderer {
     };
     visit(blocks);
     keys.add("sans::");
-    for (const key of keys) await this.loadFont(key);
+    await Promise.all([...keys].map((key) => this.loadFont(key)));
   }
 
   private fontKey(s: RunStyle): string {
     return `${s.family}:${s.bold ? "b" : ""}:${s.italic ? "i" : ""}`;
   }
 
-  private async loadFont(key: string): Promise<PDFFont> {
-    const cached = this.fonts.get(key);
-    if (cached) return cached;
-    const [family, b, i] = key.split(":") as [Family, string, string];
+  /** Load (once) the font for a key like "serif:b:i" or "fallback:b:". */
+  private loadFont(key: string): Promise<LoadedFont> {
+    let pending = this.fonts.get(key);
+    if (!pending) {
+      pending = this.embedFont(key).then((font) => {
+        this.loaded.set(key, font);
+        return font;
+      });
+      this.fonts.set(key, pending);
+    }
+    return pending;
+  }
+
+  private async embedFont(key: string): Promise<LoadedFont> {
+    const [family, b, i] = key.split(":") as [Family | "fallback", string, string];
     const bold = b === "b";
     const italic = i === "i";
-    let name: StandardFonts;
-    if (family === "serif") {
-      name = bold && italic ? StandardFonts.TimesRomanBoldItalic
-        : bold ? StandardFonts.TimesRomanBold
-        : italic ? StandardFonts.TimesRomanItalic
-        : StandardFonts.TimesRoman;
-    } else if (family === "mono") {
-      name = bold && italic ? StandardFonts.CourierBoldOblique
-        : bold ? StandardFonts.CourierBold
-        : italic ? StandardFonts.CourierOblique
-        : StandardFonts.Courier;
-    } else {
-      name = bold && italic ? StandardFonts.HelveticaBoldOblique
-        : bold ? StandardFonts.HelveticaBold
-        : italic ? StandardFonts.HelveticaOblique
-        : StandardFonts.Helvetica;
+    const face = bold && italic ? "BoldItalic" : bold ? "Bold" : italic ? "Italic" : "Regular";
+    if (family === "fallback") {
+      const bytes = await loadFontFile(`${FALLBACK_FAMILY}-${bold ? "Bold" : "Regular"}.ttf`);
+      if (bytes) return this.embedTrueType(bytes);
+      return { pdf: await this.doc.embedFont(SANS_STD[bold ? 1 : 0]), fk: undefined };
     }
-    const font = await this.doc.embedFont(name);
-    this.fonts.set(key, font);
-    return font;
+    const def = FAMILIES[family] ?? FAMILIES.sans;
+    const bytes = await loadFontFile(`${def.file}-${face}.ttf`);
+    if (bytes) {
+      const font = await this.embedTrueType(bytes);
+      if (font.fk) return font;
+    }
+    return { pdf: await this.doc.embedFont(def.std[(bold ? 1 : 0) + (italic ? 2 : 0)]), fk: undefined };
   }
 
-  private font(s: RunStyle): PDFFont {
-    return this.fonts.get(this.fontKey(s)) ?? this.fonts.get("sans::")!;
+  private async embedTrueType(bytes: Uint8Array): Promise<LoadedFont> {
+    try {
+      const fk = fontkit.create(bytes);
+      const pdf = await this.doc.embedFont(bytes, { subset: true });
+      return { pdf, fk };
+    } catch {
+      return { pdf: await this.doc.embedFont(StandardFonts.Helvetica), fk: undefined };
+    }
   }
 
-  private canEncode(font: PDFFont, ch: string): boolean {
+  private font(s: RunStyle): LoadedFont {
+    return this.loaded.get(this.fontKey(s)) ?? this.loaded.get("sans::")!;
+  }
+
+  private canEncode(font: LoadedFont, ch: string): boolean {
     let cache = this.encodable.get(font);
     if (!cache) {
       cache = new Map();
@@ -1123,33 +1338,54 @@ class Renderer {
     }
     let ok = cache.get(ch);
     if (ok === undefined) {
-      try {
-        font.encodeText(ch);
-        ok = true;
-      } catch {
-        ok = false;
+      if (font.fk) {
+        const cp = ch.codePointAt(0) ?? 0;
+        ok = cp >= 0x20 && font.fk.hasGlyphForCodePoint(cp);
+      } else {
+        try {
+          font.pdf.encodeText(ch);
+          ok = true;
+        } catch {
+          ok = false;
+        }
       }
       cache.set(ch, ok);
     }
     return ok;
   }
 
-  /** Keep only characters the font can draw; accented letters degrade to their base. */
-  private clean(font: PDFFont, text: string): string {
-    let out = "";
+  /**
+   * Split text into runs of a font that can draw each character: the style's
+   * font first, then the DejaVu fallback, then a plain-ASCII stand-in or the
+   * accented letter's base form; anything else is dropped.
+   */
+  private async segments(style: RunStyle, text: string): Promise<{ font: PDFFont; text: string }[]> {
+    const primary = this.font(style);
+    let fallback: LoadedFont | undefined;
+    const out: { font: PDFFont; text: string }[] = [];
+    const push = (font: PDFFont, piece: string) => {
+      const last = out[out.length - 1];
+      if (last && last.font === font) last.text += piece;
+      else out.push({ font, text: piece });
+    };
     for (const ch of text) {
       if (ch === "\u00ad" || ch === "\u200b" || ch === "\u200c" || ch === "\u200d" || ch === "\ufeff") continue;
-      if (this.canEncode(font, ch)) {
-        out += ch;
+      if (this.canEncode(primary, ch)) {
+        push(primary.pdf, ch);
+        continue;
+      }
+      if (!fallback) fallback = await this.loadFont(`fallback:${style.bold ? "b" : ""}:`);
+      if (this.canEncode(fallback, ch)) {
+        push(fallback.pdf, ch);
         continue;
       }
       const mapped = FALLBACK_CHARS[ch];
-      if (mapped !== undefined) {
-        out += mapped;
+      if (mapped !== undefined && [...mapped].every((m) => this.canEncode(primary, m))) {
+        push(primary.pdf, mapped);
         continue;
       }
       const base = ch.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
-      if (base && base !== ch && [...base].every((b) => this.canEncode(font, b))) out += base;
+      if (base && base !== ch && [...base].every((m) => this.canEncode(primary, m))) push(primary.pdf, base);
     }
     return out;
   }
@@ -1194,12 +1430,12 @@ class Renderer {
 
   private newPage(): void {
     this.page = this.doc.addPage([this.section.width, this.section.height]);
-    this.y = this.section.height - this.section.top;
+    this.y = this.section.height - this.bodyTop;
     this.prevPara = undefined;
   }
 
   private get bottom(): number {
-    return this.section.bottom;
+    return this.bodyBottom;
   }
 
   private get contentWidth(): number {
@@ -1207,18 +1443,16 @@ class Renderer {
   }
 
   private get atPageTop(): boolean {
-    return this.y >= this.section.height - this.section.top - 0.01;
+    return this.y >= this.section.height - this.bodyTop - 0.01;
   }
 
   // -- paragraph measurement -------------------------------------------------
 
-  private piece(text: string, style: RunStyle): Piece | undefined {
-    const font = this.font(style);
-    const cleaned = this.clean(font, style.caps ? text.toUpperCase() : text);
-    if (!cleaned) return undefined;
+  private async pieces(text: string, style: RunStyle): Promise<Piece[]> {
     const size = style.script === "normal" ? style.size : style.size * 0.65;
     const rise = style.script === "super" ? style.size * 0.35 : style.script === "sub" ? -style.size * 0.15 : 0;
-    return { kind: "text", text: cleaned, style, font, size, rise, width: this.width(font, cleaned, size) };
+    const segs = await this.segments(style, style.caps ? text.toUpperCase() : text);
+    return segs.map((seg) => ({ kind: "text" as const, text: seg.text, style, font: seg.font, size, rise, width: this.width(seg.font, seg.text, size) }));
   }
 
   private async units(para: Para, maxWidth: number, maxHeight: number): Promise<Unit[]> {
@@ -1231,11 +1465,8 @@ class Renderer {
       }
     };
     if (para.label !== undefined) {
-      const piece = this.piece(para.label, para.mark);
-      if (piece) {
-        word.push(piece);
-        flushWord();
-      }
+      word.push(...(await this.pieces(para.label, para.mark)));
+      flushWord();
       units.push({ kind: "tab" });
     }
     for (const inline of para.inlines) {
@@ -1252,8 +1483,7 @@ class Renderer {
                 else if (ch === " ") units.push({ kind: "space", style: inline.style });
               }
             } else {
-              const piece = this.piece(part, inline.style);
-              if (piece) word.push(piece);
+              word.push(...(await this.pieces(part, inline.style)));
             }
           }
           break;
@@ -1261,8 +1491,7 @@ class Renderer {
         case "image": {
           const img = await this.image(inline.image);
           if (!img) {
-            const piece = this.piece("[image]", { ...para.mark, italic: true, color: PLACEHOLDER });
-            if (piece) word.push(piece);
+            word.push(...(await this.pieces("[image]", { ...para.mark, italic: true, color: PLACEHOLDER })));
             break;
           }
           let { width, height } = inline;
@@ -1274,11 +1503,12 @@ class Renderer {
           flushWord();
           break;
         }
-        case "placeholder": {
-          const piece = this.piece("[image]", { ...inline.style, italic: true, color: PLACEHOLDER });
-          if (piece) word.push(piece);
+        case "placeholder":
+          word.push(...(await this.pieces("[image]", { ...inline.style, italic: true, color: PLACEHOLDER })));
           break;
-        }
+        case "field":
+          word.push(...(await this.pieces(String(inline.name === "PAGE" ? this.pageNumber : this.pageCount), inline.style)));
+          break;
         case "tab":
           flushWord();
           units.push({ kind: "tab" });
@@ -1318,6 +1548,8 @@ class Renderer {
     let width = 0;
     let pendingSpaces: Gap[] = [];
     let first = true;
+    /** Position (relative to the line start) of the last center/right stop, so later tabs search past it. */
+    let tabFloor = 0;
 
     const lineAvail = () => avail - (first ? firstOffset : 0);
     const lineStart = () => left + (first ? firstOffset : 0);
@@ -1326,6 +1558,22 @@ class Renderer {
       // Trailing spaces don't count.
       while (items.length && items[items.length - 1]!.kind === "space") {
         width -= (items.pop() as Gap).width;
+      }
+      // Center/right tab stops: size the tab so the text that follows it
+      // (up to the next tab) ends up centered on / right-aligned to the stop.
+      if (items.some((it) => it.kind === "tab" && it.stop && it.stop.align !== "left")) {
+        let x = 0;
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i]!;
+          if (it.kind === "tab" && it.stop && it.stop.align !== "left") {
+            let seg = 0;
+            for (let j = i + 1; j < items.length && items[j]!.kind !== "tab"; j++) seg += items[j]!.width;
+            const target = it.stop.pos - lineStart() - (it.stop.align === "right" ? seg : seg / 2);
+            it.width = Math.max(0, target - x);
+          }
+          x += it.width;
+        }
+        width = x;
       }
       let maxSize = 0;
       let maxImage = 0;
@@ -1342,23 +1590,29 @@ class Renderer {
       items = [];
       width = 0;
       pendingSpaces = [];
+      tabFloor = 0;
       first = false;
     };
 
-    const tabStop = (x: number): number => {
+    const tabStop = (x: number): TabStop => {
       const abs = lineStart() + x; // position relative to the box's left edge
-      const stops = [...p.tabs];
-      if (para.label !== undefined && p.hanging > 0) stops.push(left);
-      stops.sort((a, b) => a - b);
-      for (const s of stops) if (s > abs + 0.5) return s - lineStart();
-      const next = (Math.floor(abs / DEFAULT_TAB) + 1) * DEFAULT_TAB;
-      return next - lineStart();
+      const stops: TabStop[] = [...p.tabs];
+      if (para.label !== undefined && p.hanging > 0) stops.push({ pos: left, align: "left" });
+      stops.sort((a, b) => a.pos - b.pos);
+      const edge = lineStart() + lineAvail(); // right edge of the line
+      for (const s of stops) {
+        if (s.pos <= abs + 0.5) continue;
+        // Centered/right-aligned stops past the margin (common in header
+        // styles written for wider pages) snap to the margin instead of wrapping.
+        return s.align === "left" || s.pos <= edge ? s : { pos: edge, align: s.align };
+      }
+      return { pos: (Math.floor(abs / DEFAULT_TAB) + 1) * DEFAULT_TAB, align: "left" };
     };
 
     for (const u of units) {
       switch (u.kind) {
         case "space":
-          if (items.length) pendingSpaces.push({ kind: "space", width: this.width(this.font(u.style), " ", u.style.size), style: u.style });
+          if (items.length) pendingSpaces.push({ kind: "space", width: this.width(this.font(u.style).pdf, " ", u.style.size), style: u.style });
           break;
         case "tab": {
           for (const s of pendingSpaces) {
@@ -1366,11 +1620,17 @@ class Renderer {
             width += s.width;
           }
           pendingSpaces = [];
-          const target = tabStop(width);
-          if (target > lineAvail()) {
+          const stop = tabStop(Math.max(width, tabFloor));
+          const target = stop.pos - lineStart();
+          if (stop.align !== "left") {
+            // Centered/right-aligned: the gap is sized in finish() once the
+            // following text is known, so don't count the stop as used width.
+            items.push({ kind: "tab", width: 0, style: undefined, stop });
+            tabFloor = target;
+          } else if (target > lineAvail() + 0.5) {
             finish();
           } else {
-            items.push({ kind: "tab", width: target - width, style: undefined });
+            items.push({ kind: "tab", width: target - width, style: undefined, stop });
             width = target;
           }
           break;
@@ -1470,7 +1730,7 @@ class Renderer {
       try {
         this.page.drawText(it.text, { x, y, size: it.size, font: it.font, color });
       } catch {
-        // Should not happen after clean(); never let one word kill the document.
+        // Should not happen after segments(); never let one word kill the document.
       }
       if (it.style.underline || it.style.link) {
         this.page.drawLine({ start: { x, y: y - it.size * 0.12 }, end: { x: x + it.width, y: y - it.size * 0.12 }, thickness: Math.max(0.5, it.size * 0.05), color });
@@ -1511,7 +1771,7 @@ class Renderer {
   }
 
   private async flowParagraph(para: Para, next: Block | undefined): Promise<void> {
-    const pageHeight = this.section.height - this.section.top - this.bottom;
+    const pageHeight = this.section.height - this.bodyTop - this.bottom;
     if (para.props.pageBreakBefore && !this.atPageTop) this.newPage();
     const lines = await this.layoutParagraph(para, this.contentWidth, pageHeight * 0.9);
     const total = lines.reduce((h, l) => h + l.height, 0);
@@ -1675,7 +1935,7 @@ class Renderer {
   }
 
   private async flowTable(table: Table): Promise<void> {
-    const pageHeight = this.section.height - this.section.top - this.bottom;
+    const pageHeight = this.section.height - this.bodyTop - this.bottom;
     const rows = await this.measureRows(table, this.contentWidth, pageHeight * 0.9);
     for (const row of rows) {
       if (this.y - row.height < this.bottom && !this.atPageTop) this.newPage();

@@ -82,9 +82,31 @@ describe("docxToPdf", () => {
     expect(page).toMatch(/3\. Third item/);
     expect(page).toContain("hello world");
     expect(page).toMatch(/Left Center Right/);
-    // Accented Latin letters degrade to base letters instead of vanishing.
-    expect(page).toContain("Zazólc gesla jazn");
-    expect(page).toContain("naïve café");
+    // Real TrueType fonts: accented Latin and Cyrillic survive verbatim.
+    expect(page).toContain("Zażółć gęślą jaźń");
+    expect(page).toContain("Привет");
+  });
+
+  test("renders headers, footers, page-number fields, theme fonts and non-Latin scripts", async () => {
+    const pdf = await docxToPdf(await fixture("unicode.docx"));
+    const pages = await pageTexts(pdf);
+    expect(pages.length).toBeGreaterThan(2);
+    for (const [i, page] of pages.entries()) {
+      expect(page).toContain("Acme Corp");
+      expect(page).toContain("Confidential");
+      expect(page).toContain(`Page ${i + 1} of ${pages.length}`);
+    }
+    const first = pages[0]!;
+    expect(first).toContain("Zażółć gęślą jaźń");
+    expect(first).toContain("Příliš žluťoučký kůň");
+    expect(first).toContain("Η γρήγορη καφέ αλεπού");
+    expect(first).toContain("Съешь же ещё этих мягких");
+    expect(first).toContain("Bold Cyrillic Привет and italic Greek Γειά σου");
+    expect(first).toContain("→ ← ✓ ✗ ★");
+    // The tab-separated line stays on one line: the right stop snaps to the margin.
+    expect(first).toMatch(/Left Center tab Right tab Filler line 1/);
+    // Fonts are embedded as subsets, so the PDF stays small.
+    expect(pdf.length).toBeLessThan(400_000);
   });
 
   test("handles a minimal document with no styles or numbering parts", async () => {
