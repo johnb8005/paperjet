@@ -98,9 +98,9 @@ export function App() {
         <footer className="border-t py-8">
           <div className="mx-auto w-full max-w-5xl px-4 text-sm text-muted-foreground">
             <p>
-              <strong className="text-foreground">Your files stay yours.</strong> Client-side
-            tools never upload anything — processing happens in your browser. Server-side
-              tools (Word to PDF) delete files within 1 hour, and no human ever sees them.
+              <strong className="text-foreground">Your files stay yours.</strong> Every tool
+              runs in your browser — nothing is ever uploaded, and no human ever sees your
+              files.
             </p>
             <p className="mt-2">
               Paperjet · Free for everyone · No ads ·{" "}

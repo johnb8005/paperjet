@@ -37,6 +37,9 @@ if (!result.success) {
 const workerPath = Bun.resolveSync("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.dir);
 await cp(workerPath, "dist/pdf.worker.min.mjs");
 
+// The Word → PDF renderer lazy-loads TrueType fonts from /fonts/ at runtime.
+await cp("fonts", "dist/fonts", { recursive: true });
+
 // SPA deep-link fallback for static hosts that serve 404.html (GitHub Pages).
 await cp("dist/index.html", "dist/404.html");
 

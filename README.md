@@ -1,6 +1,6 @@
 # Paperjet
 
-Fast, private, browser-first PDF tools. Merge, split, compress, convert, rotate, and sign PDFs — no account, no ads, and for 7 of 8 tools **your files never leave your device**.
+Fast, private, browser-first PDF tools. Merge, split, compress, convert, rotate, and sign PDFs — no account, no ads, and **your files never leave your device**: every tool runs entirely in the browser.
 
 Built from the [Paperjet PRD](#product-scope): a lighter, faster, more private alternative to iLovePDF/Smallpdf.
 
@@ -9,7 +9,7 @@ Built from the [Paperjet PRD](#product-scope): a lighter, faster, more private a
 - **Runtime / bundler / server:** [Bun](https://bun.sh) (fullstack `Bun.serve` with HTML imports)
 - **UI:** React 19 + TypeScript, Tailwind CSS v4, shadcn-style components
 - **PDF engine (client-side):** [pdf-lib](https://pdf-lib.js.org) for manipulation, [pdf.js](https://mozilla.github.io/pdf.js/) for rendering, [fflate](https://github.com/101arrowz/fflate) for zips
-- **Word → PDF (server-side):** headless LibreOffice behind a Bun API route
+- **Word → PDF (client-side):** our own DOM-free `.docx` renderer (`src/lib/pdf/docx.ts`) — fflate unzips the document, [fast-xml-parser](https://github.com/NaturalIntelligence/fast-xml-parser) reads the WordprocessingML, pdf-lib lays it out
 - **CI typechecking:** [tsgo](https://github.com/microsoft/typescript-go) (`@typescript/native-preview`)
 
 ## Getting started
@@ -25,16 +25,12 @@ Other commands:
 bun run typecheck  # tsgo --noEmit
 bun test           # unit tests (merge/split/rotate engines)
 bun run build      # static production build → dist/
-bun run start      # production server (serves app + conversion API)
+bun run start      # production server (serves the static app)
 ```
-
-Word → PDF requires LibreOffice (`soffice`) on the server's PATH; without it the endpoint degrades gracefully to a 503 and the UI explains the service is unavailable.
 
 ## Deployment
 
-**GitHub Pages (backend-less):** every push to `main` triggers `.github/workflows/deploy-pages.yml`, which builds the static site with `BASE_PATH=/<repo>` and publishes `dist/` to Pages. All client-side tools work fully; the Word → PDF page detects the missing backend via `/api/health` and shows a service-unavailable notice. Deep links work through the `404.html` SPA fallback. One-time setup: repo **Settings → Pages → Source: GitHub Actions**.
-
-**Full deployment (with Word → PDF):** host `dist/` on any static host/CDN at the root path and run `bun run start` (needs LibreOffice) behind `/api/*`.
+The app is fully static — there is no backend. **GitHub Pages:** every push to `main` triggers `.github/workflows/deploy-pages.yml`, which builds the site with `BASE_PATH=/<repo>` and publishes `dist/` to Pages. Deep links work through the `404.html` SPA fallback. One-time setup: repo **Settings → Pages → Source: GitHub Actions**. Any other static host/CDN works the same way (`bun run build`, upload `dist/`).
 
 `BASE_PATH` controls subpath hosting: it prefixes bundled asset URLs, router paths, and the pdf.js worker URL at build time (see `build.ts` and `src/lib/base.ts`).
 
@@ -48,7 +44,7 @@ Word → PDF requires LibreOffice (`soffice`) on the server's PATH; without it t
 | PDF → Image | `/pdf-to-image` | Client-side — PNG/JPG at 72–216 dpi, zip for multi-page |
 | Image → PDF | `/image-to-pdf` | Client-side — JPG/PNG/WebP, EXIF auto-orient, drag-to-reorder |
 | Rotate | `/rotate` | Client-side — per-page or all pages, live thumbnails |
-| Word → PDF | `/word-to-pdf` | **Server-side** — LibreOffice headless, files hard-deleted immediately |
+| Word → PDF | `/word-to-pdf` | Client-side — styles, lists, tables, images, links, page setup (see [limitations](#word--pdf-renderer)) |
 | Markdown → PDF | `/markdown-to-pdf` | Client-side — headings, lists, code, tables, blockquotes |
 | Sign | `/sign` | Client-side — draw/type/upload, stored in `localStorage` only |
 
@@ -78,13 +74,13 @@ Or in Claude Desktop's `claude_desktop_config.json`:
 }
 ```
 
-**Tools:** `merge_pdfs`, `split_pdf`, `rotate_pdf`, `images_to_pdf`, `markdown_to_pdf`, `docx_to_pdf` (needs LibreOffice). All tools take local file paths and process everything locally — nothing is uploaded.
+**Tools:** `merge_pdfs`, `split_pdf`, `rotate_pdf`, `images_to_pdf`, `markdown_to_pdf`, `docx_to_pdf`. All tools take local file paths and process everything locally — nothing is uploaded, and nothing beyond Bun needs to be installed.
 
 The package exposes a `paperjet-mcp` bin, so publishing to npm would make it runnable via `bunx paperjet-mcp` (Bun is required — the server uses Bun APIs). For wider distribution, add it to an MCP registry listing once published.
 
 ### Remote MCP server (hosted)
 
-`src/mcp-http.ts` is the hosted variant: **Streamable HTTP transport, stateless**, for use as a claude.ai custom connector or from any remote MCP client. Because a remote server can't see the caller's disk, tools take files as **URLs or base64** and return PDFs as base64 resources. Limits: 25 MB per file, 100 MB per request; URL fetches are SSRF-guarded (http/https only, private addresses blocked); uploads never touch disk except `docx_to_pdf`'s per-request temp dir, which is deleted in `finally`.
+`src/mcp-http.ts` is the hosted variant: **Streamable HTTP transport, stateless**, for use as a claude.ai custom connector or from any remote MCP client. Because a remote server can't see the caller's disk, tools take files as **URLs or base64** and return PDFs as base64 resources. Limits: 25 MB per file, 100 MB per request; URL fetches are SSRF-guarded (http/https only, private addresses blocked); uploads are processed in memory and never touch disk.
 
 ```sh
 bun run mcp:remote                      # listens on :3000, endpoint /mcp
@@ -100,7 +96,7 @@ MCP_AUTH_TOKEN=secret bun run mcp:remote  # optional bearer-token auth
 
 One-time step for registry deploys: make the GHCR package public (GitHub → your profile → Packages → paperjet-mcp → Package settings → Change visibility → Public), so hosts can pull it without credentials.
 
-Building locally instead: `docker build -t paperjet-mcp .` — add `--build-arg WITH_LIBREOFFICE=false` for a ~600 MB smaller, much faster build without the `docx_to_pdf` tool.
+Building locally instead: `docker build -t paperjet-mcp .` — the image is just Bun plus the app, no system packages.
 
 Then connect from claude.ai (Settings → Connectors → Add custom connector) or Claude Code:
 
@@ -110,17 +106,32 @@ claude mcp add --transport http paperjet-remote https://your-host/mcp
 
 ## Privacy model
 
-- **Client-side tools** never upload anything: pdf-lib/pdf.js run in the browser (pdf.js in a web worker). This is stated on every tool page.
-- **Word → PDF** writes the upload to a per-request temp directory and hard-deletes it in a `finally` block — files never outlive the request (well inside the PRD's 1-hour promise). No file-content analytics anywhere.
+- **Every tool** runs in the browser and never uploads anything: pdf-lib/pdf.js run client-side (pdf.js in a web worker), and so does the Word → PDF renderer. This is stated on every tool page. No file-content analytics anywhere.
 - Signatures for the Sign tool live in `localStorage` and are never sent to a server.
 
 ## Architecture notes
 
-- `src/server.ts` — Bun fullstack server: serves the bundled SPA (with SPA fallback for deep links), the pdf.js worker file, `/api/health`, and `POST /api/convert/docx`.
-- `src/lib/pdf/` — pure processing engines (merge, split, rotate, compress, images, sign), UI-free and unit-tested where they don't need a DOM.
+- `src/server.ts` — Bun dev/production server: serves the bundled SPA (with SPA fallback for deep links), the pdf.js worker file and `/api/health`.
+- `src/lib/pdf/` — pure processing engines (merge, split, rotate, compress, images, sign, markdown, docx), UI-free and unit-tested where they don't need a DOM.
 - `src/pages/` — one lazy-loadable page per tool; `src/components/` — shared shell (dropzone with drag/browse/paste, progress, result panel with chaining).
-- `build.ts` — static build to `dist/` for CDN hosting; the conversion API deploys separately, matching the PRD's client-side-first cost model.
+- `build.ts` — static build to `dist/` for CDN hosting, matching the PRD's client-side-first cost model.
 - Compression re-renders pages to JPEG at preset resolution/quality (rasterizes text). A Ghostscript-WASM pipeline that preserves vector text is the planned upgrade path.
+
+### Word → PDF renderer
+
+`src/lib/pdf/docx.ts` is a from-scratch `.docx` layout engine rather than a LibreOffice/WASM port (LibreOffice-in-WASM builds are hundreds of MB and need cross-origin isolation headers that static hosts like GitHub Pages can't set). It converts a typical document in well under a second and handles:
+
+- paragraphs: alignment, indents, hanging indents, spacing, line spacing, borders, shading, left/center/right tab stops, page/line/section breaks, page size and margins
+- runs: bold, italic, underline, strikethrough, size, color, highlight, super/subscript, caps, hyperlinks
+- styles: paragraph and character styles with `basedOn` chains, document defaults and theme fonts
+- lists: bullets and multi-level numbering from `numbering.xml` (decimal, letters, roman)
+- tables: grid widths, column spans, vertical merges, borders, cell shading, nested tables
+- images: inline PNG and JPEG (other formats show an `[image]` placeholder)
+- headers and footers (default/first/even variants) with live `PAGE` / `NUMPAGES` fields
+
+**Fonts.** Text is set in open fonts that are metric-compatible with the usual Word fonts — Liberation (Arial/Times New Roman/Courier New), Carlito (Calibri) and Caladea (Cambria) — with DejaVu Sans as a per-character fallback, so Latin, Greek and Cyrillic text renders as written. Faces live in `fonts/` (see its README for provenance, licenses and the preparation script), are lazy-loaded only when a document uses them, and are embedded as subsets so output PDFs stay small. If the font files can't be fetched, the renderer falls back to the PDF standard fonts.
+
+Not rendered yet: footnotes, text boxes and shapes (their text is salvaged inline), floating-image wrapping, and CJK or complex scripts (no bundled font covers them; those characters are dropped).
 
 ## Product scope
 
@@ -128,4 +139,4 @@ v1 implements the 8 core tools from the PRD (§4) with the free-tier limits (20 
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). The bundled fonts in `fonts/` keep their own licenses (SIL OFL 1.1 for Liberation, Carlito and Caladea; the Bitstream Vera license for DejaVu) — see `fonts/README.md`.
